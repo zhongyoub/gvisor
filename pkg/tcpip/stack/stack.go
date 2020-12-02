@@ -455,7 +455,7 @@ type Stack struct {
 
 	// receiveBufferSize holds the min/default/max receive buffer sizes for
 	// endpoints other than TCP.
-	receiveBufferSize ReceiveBufferSizeOption
+	receiveBufferSize tcpip.ReceiveBufferSizeOption
 
 	// tcpInvalidRateLimit is the maximal rate for sending duplicate
 	// acknowledgements in response to incoming TCP packets that are for an existing
@@ -669,7 +669,7 @@ func New(opts Options) *Stack {
 			Default: DefaultBufferSize,
 			Max:     DefaultMaxBufferSize,
 		},
-		receiveBufferSize: ReceiveBufferSizeOption{
+		receiveBufferSize: tcpip.ReceiveBufferSizeOption{
 			Min:     MinBufferSize,
 			Default: DefaultBufferSize,
 			Max:     DefaultMaxBufferSize,
