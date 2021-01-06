@@ -195,6 +195,7 @@ func runRunsc(tc gtest.TestCase, spec *specs.Spec) error {
 		debugLogDir += "/"
 		log.Infof("runsc logs: %s", debugLogDir)
 		args = append(args, "-debug-log", debugLogDir)
+		args = append(args, "-coverage-report", debugLogDir)
 
 		// Default -log sends messages to stderr which makes reading the test log
 		// difficult. Instead, drop them when debug log is enabled given it's a
