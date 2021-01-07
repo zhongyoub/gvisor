@@ -10,8 +10,10 @@ go_library(
         "//runsc:__pkg__",
     ],
     deps = [
+        "//pkg/coverage",
         "//pkg/log",
         "//pkg/refs",
+        "//pkg/refsvfs2",
         "//pkg/sentry/platform",
         "//runsc/cmd",
         "//runsc/config",

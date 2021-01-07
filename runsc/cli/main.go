@@ -27,8 +27,10 @@ import (
 	"time"
 
 	"github.com/google/subcommands"
+	"gvisor.dev/gvisor/pkg/coverage"
 	"gvisor.dev/gvisor/pkg/log"
 	"gvisor.dev/gvisor/pkg/refs"
+	"gvisor.dev/gvisor/pkg/refsvfs2"
 	"gvisor.dev/gvisor/pkg/sentry/platform"
 	"gvisor.dev/gvisor/runsc/cmd"
 	"gvisor.dev/gvisor/runsc/config"
@@ -50,6 +52,7 @@ var (
 	logFD      = flag.Int("log-fd", -1, "file descriptor to log to.  If set, the 'log' flag is ignored.")
 	debugLogFD = flag.Int("debug-log-fd", -1, "file descriptor to write debug logs to.  If set, the 'debug-log-dir' flag is ignored.")
 	panicLogFD = flag.Int("panic-log-fd", -1, "file descriptor to write Go's runtime messages.")
+	coverageFD = flag.Int("coverage-fd", -1, "file descriptor to write Go coverage output.")
 )
 
 // Main is the main entrypoint.
@@ -203,6 +206,10 @@ func Main(version string) {
 	} else if conf.AlsoLogToStderr {
 		e = &log.MultiEmitter{e, newEmitter(conf.DebugLogFormat, os.Stderr)}
 	}
+	if *coverageFD >= 0 {
+		f := os.NewFile(uintptr(*coverageFD), "coverage file")
+		coverage.EnableCoverReport(f)
+	}
 
 	log.SetTarget(e)
 
@@ -232,6 +239,9 @@ func Main(version string) {
 	// Call the subcommand and pass in the configuration.
 	var ws syscall.WaitStatus
 	subcmdCode := subcommands.Execute(context.Background(), conf, &ws)
+	// Check for leaks and write coverage report before os.Exit().
+	refsvfs2.DoLeakCheck()
+	coverage.Report()
 	if subcmdCode == subcommands.ExitSuccess {
 		log.Infof("Exiting with status: %v", ws)
 		if ws.Signaled() {

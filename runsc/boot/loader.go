@@ -29,6 +29,7 @@ import (
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/bpf"
 	"gvisor.dev/gvisor/pkg/context"
+	"gvisor.dev/gvisor/pkg/coverage"
 	"gvisor.dev/gvisor/pkg/cpuid"
 	"gvisor.dev/gvisor/pkg/fd"
 	"gvisor.dev/gvisor/pkg/log"
@@ -482,10 +483,6 @@ func (l *Loader) Destroy() {
 	// Release all kernel resources. This is only safe after we can no longer
 	// save/restore.
 	l.k.Release()
-
-	// All sentry-created resources should have been released at this point;
-	// check for reference leaks.
-	refsvfs2.DoLeakCheck()
 
 	// In the success case, stdioFDs and goferFDs will only contain
 	// released/closed FDs that ownership has been passed over to host FDs and
@@ -987,6 +984,15 @@ func (l *Loader) waitContainer(cid string, waitStatus *uint32) error {
 	// consider the container exited.
 	ws := l.wait(tg)
 	*waitStatus = ws
+
+	// Check for leaks and write coverage report after the root container has
+	// exited. This guarantees that the report is written in cases where the
+	// sandbox is killed by a signal after the ContainerWait request is completed.
+	if l.root.procArgs.ContainerID == cid {
+		// All sentry-created resources should have been released at this point.
+		refsvfs2.DoLeakCheck()
+		coverage.Report()
+	}
 	return nil
 }
 
