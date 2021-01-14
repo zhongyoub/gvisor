@@ -420,7 +420,10 @@ nogo_test = rule(
             allow_files = True,
             doc = "Relevant src files. This is ignored except to make the nogo_test directly affected by the files.",
         ),
-        "_filter": attr.label(default = "//tools/nogo/filter:filter"),
+        "_filter": attr.label(
+            default = "//tools/nogo/filter:filter",
+            cfg = "host",
+        ),
     },
     test = True,
 )
