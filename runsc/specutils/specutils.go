@@ -332,8 +332,8 @@ func capsFromNames(names []string, skipSet map[linux.Capability]struct{}) (auth.
 	return auth.CapabilitySetOfMany(caps), nil
 }
 
-// Is9PMount returns true if the given mount can be mounted as an external gofer.
-func Is9PMount(m specs.Mount) bool {
+// IsGoferMount returns true if the given mount can be mounted as an external gofer.
+func IsGoferMount(m specs.Mount) bool {
 	return m.Type == "bind" && m.Source != "" && IsSupportedDevMount(m)
 }
 

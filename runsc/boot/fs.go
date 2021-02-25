@@ -165,7 +165,7 @@ func compileMounts(spec *specs.Spec) []specs.Mount {
 }
 
 // p9MountData creates a slice of p9 mount data.
-func p9MountData(fd int, fa config.FileAccessType, vfs2 bool) []string {
+func p9MountData(fd int, fa config.FileAccessType, vfs2 bool, lisafs bool) []string {
 	opts := []string{
 		"trans=fd",
 		"rfdno=" + strconv.Itoa(fd),
@@ -178,6 +178,9 @@ func p9MountData(fd int, fa config.FileAccessType, vfs2 bool) []string {
 	}
 	if fa == config.FileAccessShared {
 		opts = append(opts, "cache=remote_revalidating")
+	}
+	if vfs2 && lisafs {
+		opts = append(opts, "lisafs=true")
 	}
 	return opts
 }
@@ -730,7 +733,7 @@ func (c *containerMounter) createRootMount(ctx context.Context, conf *config.Con
 	fd := c.fds.remove()
 	log.Infof("Mounting root over 9P, ioFD: %d", fd)
 	p9FS := mustFindFilesystem("9p")
-	opts := p9MountData(fd, conf.FileAccess, false /* vfs2 */)
+	opts := p9MountData(fd, conf.FileAccess, false /* vfs2 */, false /* lisafs */)
 
 	if conf.OverlayfsStaleRead {
 		// We can't check for overlayfs here because sandbox is chroot'ed and gofer
@@ -792,7 +795,7 @@ func (c *containerMounter) getMountNameAndOptions(conf *config.Config, m specs.M
 	case bind:
 		fd := c.fds.remove()
 		fsName = gofervfs2.Name
-		opts = p9MountData(fd, c.getMountAccessType(m), conf.VFS2)
+		opts = p9MountData(fd, c.getMountAccessType(m), conf.VFS2, conf.Lisafs)
 		// If configured, add overlay to all writable mounts.
 		useOverlay = conf.Overlay && !mountFlags(m.Options).ReadOnly
 
@@ -945,7 +948,7 @@ func (c *containerMounter) createRestoreEnvironment(conf *config.Config) (*fs.Re
 
 	// Add root mount.
 	fd := c.fds.remove()
-	opts := p9MountData(fd, conf.FileAccess, false /* vfs2 */)
+	opts := p9MountData(fd, conf.FileAccess, false /* vfs2 */, false /* lisafs */)
 
 	mf := fs.MountSourceFlags{}
 	if c.root.Readonly || conf.Overlay {

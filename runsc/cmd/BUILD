@@ -42,6 +42,7 @@ go_library(
     ],
     deps = [
         "//pkg/coverage",
+        "//pkg/lisafs",
         "//pkg/log",
         "//pkg/p9",
         "//pkg/sentry/control",
