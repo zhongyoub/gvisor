@@ -151,6 +151,15 @@ func (vfs *VirtualFilesystem) putResolvingPath(ctx context.Context, rp *Resolvin
 	resolvingPathPool.Put(rp)
 }
 
+// Copy creates another ResolvingPath with the same state as the original.
+// Copies are independent, using the copy does not change the original and
+// vice-versa.
+func (rp *ResolvingPath) Copy() *ResolvingPath {
+	// All fields all shallow copiable.
+	copy := *rp
+	return &copy
+}
+
 func (rp *ResolvingPath) decRefStartAndMount(ctx context.Context) {
 	if rp.flags&rpflagsHaveStartRef != 0 {
 		rp.start.DecRef(ctx)
