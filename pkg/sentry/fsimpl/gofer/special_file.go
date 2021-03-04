@@ -21,6 +21,7 @@ import (
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/fdnotifier"
+	"gvisor.dev/gvisor/pkg/lisafs"
 	"gvisor.dev/gvisor/pkg/p9"
 	"gvisor.dev/gvisor/pkg/safemem"
 	"gvisor.dev/gvisor/pkg/sentry/fsmetric"
@@ -127,6 +128,9 @@ func (fd *specialFileFD) OnClose(ctx context.Context) error {
 	if !fd.vfsfd.IsWritable() {
 		return nil
 	}
+	if fs := fd.filesystem(); fs.opts.lisaEnabled {
+		return fs.fFlushLisa(ctx, fd.handle.fileLisa)
+	}
 	return fd.handle.file.flush(ctx)
 }
 
@@ -162,6 +166,9 @@ func (fd *specialFileFD) Allocate(ctx context.Context, mode, offset, length uint
 	if fd.isRegularFile {
 		d := fd.dentry()
 		return d.doAllocate(ctx, offset, length, func() error {
+			if d.fs.opts.lisaEnabled {
+				return d.fs.fAllocateLisa(ctx, fd.handle.fileLisa, mode, offset, length)
+			}
 			return fd.handle.file.allocate(ctx, p9.ToAllocateMode(mode), offset, length)
 		})
 	}
@@ -367,10 +374,10 @@ func (fd *specialFileFD) Seek(ctx context.Context, offset int64, whence int32) (
 
 // Sync implements vfs.FileDescriptionImpl.Sync.
 func (fd *specialFileFD) Sync(ctx context.Context) error {
-	return fd.sync(ctx, false /* forFilesystemSync */)
+	return fd.sync(ctx, false /* forFilesystemSync */, nil /* accFsyncFDIDsLisa */)
 }
 
-func (fd *specialFileFD) sync(ctx context.Context, forFilesystemSync bool) error {
+func (fd *specialFileFD) sync(ctx context.Context, forFilesystemSync bool, accFsyncFDIDsLisa *[]lisafs.FDID) error {
 	err := func() error {
 		// If we have a host FD, fsyncing it is likely to be faster than an fsync
 		// RPC.
@@ -379,6 +386,13 @@ func (fd *specialFileFD) sync(ctx context.Context, forFilesystemSync bool) error
 			err := unix.Fsync(int(fd.handle.fd))
 			ctx.UninterruptibleSleepFinish(false)
 			return err
+		}
+		if fs := fd.filesystem(); fs.opts.lisaEnabled {
+			if accFsyncFDIDsLisa != nil {
+				*accFsyncFDIDsLisa = append(*accFsyncFDIDsLisa, fd.handle.fileLisa)
+				return nil
+			}
+			return fs.fsyncFDLisa(ctx, fd.handle.fileLisa)
 		}
 		return fd.handle.file.fsync(ctx)
 	}()
