@@ -34,19 +34,19 @@ func init() {
 	testbench.RPCTimeout = 500 * time.Millisecond
 }
 
-type udpConn interface {
-	SrcPort(*testing.T) uint16
-	SendFrame(*testing.T, testbench.Layers, ...testbench.Layer)
-	ExpectFrame(*testing.T, testbench.Layers, time.Duration) (testbench.Layers, error)
-	Close(*testing.T)
-}
-
 type testCase struct {
 	bindTo, sendTo                            net.IP
 	sendToBroadcast, bindToDevice, expectData bool
+	proto                                     protoTest
 }
 
-func TestUDP(t *testing.T) {
+type protoTest interface {
+	Name() string
+	Send(t *testing.T, dut testbench.DUT, tc testCase)
+	Recv(t *testing.T, dut testbench.DUT, tc testCase)
+}
+
+func TestSocket(t *testing.T) {
 	dut := testbench.NewDUT(t)
 	subnetBcast := func() net.IP {
 		subnet := (&tcpip.AddressWithPrefix{
@@ -96,6 +96,7 @@ func TestUDP(t *testing.T) {
 					default:
 						expectData = false
 					}
+
 					testCases = append(
 						testCases,
 						testCase{
@@ -104,8 +105,31 @@ func TestUDP(t *testing.T) {
 							sendToBroadcast: sendTo.Equal(subnetBcast) || sendTo.Equal(net.IPv4bcast),
 							bindToDevice:    bindToDevice,
 							expectData:      expectData,
+							proto:           &udpTest{},
 						},
 					)
+
+					switch {
+					case bindTo.Equal(net.IPv4bcast) || bindTo.Equal(subnetBcast):
+						// ICMP sockets do not allow binding to broadcast addresses.
+					case bindTo.IsMulticast():
+						// ICMP sockets do not allow binding to multicast addresses.
+					case sendTo.IsMulticast() || sendTo.Equal(net.IPv4bcast) || sendTo.Equal(subnetBcast):
+						// TODO(gvisor.dev/issue/5681): Allow sending to
+						// multicast and broadcast addresses from ICMP sockets.
+					default:
+						testCases = append(
+							testCases,
+							testCase{
+								bindTo:          bindTo,
+								sendTo:          sendTo,
+								sendToBroadcast: sendTo.Equal(subnetBcast) || sendTo.Equal(net.IPv4bcast),
+								bindToDevice:    bindToDevice,
+								expectData:      expectData,
+								proto:           &icmpTest{},
+							},
+						)
+					}
 				}
 			}
 		}
@@ -114,43 +138,8 @@ func TestUDP(t *testing.T) {
 			if tc.bindTo != nil {
 				boundTestCaseName = fmt.Sprintf("bindTo=%s", tc.bindTo)
 			}
-			t.Run(fmt.Sprintf("%s/sendTo=%s/bindToDevice=%t/expectData=%t", boundTestCaseName, tc.sendTo, tc.bindToDevice, tc.expectData), func(t *testing.T) {
-				runTestCase(
-					t,
-					dut,
-					tc,
-					func(t *testing.T, dut testbench.DUT, conn udpConn, socketFD int32, tc testCase, payload []byte, layers testbench.Layers) {
-						var destSockaddr unix.Sockaddr
-						if sendTo4 := tc.sendTo.To4(); sendTo4 != nil {
-							addr := unix.SockaddrInet4{
-								Port: int(conn.SrcPort(t)),
-							}
-							copy(addr.Addr[:], sendTo4)
-							destSockaddr = &addr
-						} else {
-							addr := unix.SockaddrInet6{
-								Port:   int(conn.SrcPort(t)),
-								ZoneId: dut.Net.RemoteDevID,
-							}
-							copy(addr.Addr[:], tc.sendTo.To16())
-							destSockaddr = &addr
-						}
-						if got, want := dut.SendTo(t, socketFD, payload, 0, destSockaddr), len(payload); int(got) != want {
-							t.Fatalf("got dut.SendTo = %d, want %d", got, want)
-						}
-						layers = append(layers, &testbench.Payload{
-							Bytes: payload,
-						})
-						_, err := conn.ExpectFrame(t, layers, time.Second)
-
-						if !tc.expectData && err == nil {
-							t.Fatal("received unexpected packet, socket is not bound to device")
-						}
-						if err != nil && tc.expectData {
-							t.Fatal(err)
-						}
-					},
-				)
+			t.Run(fmt.Sprintf("%s/%s/sendTo=%s/bindToDevice=%t/expectData=%t", tc.proto.Name(), boundTestCaseName, tc.sendTo, tc.bindToDevice, tc.expectData), func(t *testing.T) {
+				tc.proto.Send(t, dut, tc)
 			})
 		}
 	})
@@ -173,8 +162,28 @@ func TestUDP(t *testing.T) {
 						sendToBroadcast: addr.Equal(subnetBcast) || addr.Equal(net.IPv4bcast),
 						bindToDevice:    bindToDevice,
 						expectData:      true,
+						proto:           &udpTest{},
 					},
 				)
+
+				switch {
+				case addr.Equal(net.IPv4bcast):
+					// ICMP sockets do not allow binding to broadcast addresses.
+				case addr.IsMulticast():
+					// ICMP sockets do not allow binding to multicast addresses.
+				default:
+					testCases = append(
+						testCases,
+						testCase{
+							bindTo:          addr,
+							sendTo:          addr,
+							sendToBroadcast: addr.Equal(subnetBcast) || addr.Equal(net.IPv4bcast),
+							bindToDevice:    bindToDevice,
+							expectData:      true,
+							proto:           &icmpTest{},
+						},
+					)
+				}
 			}
 		}
 		for _, bindTo := range []net.IP{
@@ -208,55 +217,136 @@ func TestUDP(t *testing.T) {
 							sendToBroadcast: sendTo.Equal(subnetBcast) || sendTo.Equal(net.IPv4bcast),
 							bindToDevice:    bindToDevice,
 							expectData:      expectData,
+							proto:           &udpTest{},
 						},
 					)
+
+					switch {
+					case bindTo.Equal(subnetBcast):
+						// ICMP sockets do not allow binding to broadcast addresses.
+					case bindTo.Equal(net.IPv4zero):
+						// TODO(gvisor.dev/issue/5673): Remove this case when
+						// ICMP sockets no longer accept traffic from multicast
+						// and broadcast when bound to IPv4zero.
+					default:
+						testCases = append(
+							testCases,
+							testCase{
+								bindTo:          bindTo,
+								sendTo:          sendTo,
+								sendToBroadcast: sendTo.Equal(subnetBcast) || sendTo.Equal(net.IPv4bcast),
+								bindToDevice:    bindToDevice,
+								// ICMP sockets do not allow receiving from
+								// broadcast or multicast addresses.
+								expectData: false,
+								proto:      &icmpTest{},
+							},
+						)
+					}
 				}
 			}
 		}
 		for _, tc := range testCases {
-			t.Run(fmt.Sprintf("bindTo=%s/sendTo=%s/bindToDevice=%t/expectData=%t", tc.bindTo, tc.sendTo, tc.bindToDevice, tc.expectData), func(t *testing.T) {
-				runTestCase(
-					t,
-					dut,
-					tc,
-					func(t *testing.T, dut testbench.DUT, conn udpConn, socketFD int32, tc testCase, payload []byte, layers testbench.Layers) {
-						conn.SendFrame(t, layers, &testbench.Payload{Bytes: payload})
-
-						if tc.expectData {
-							got, want := dut.Recv(t, socketFD, int32(len(payload)+1), 0), payload
-							if diff := cmp.Diff(want, got); diff != "" {
-								t.Errorf("received payload does not match sent payload, diff (-want, +got):\n%s", diff)
-							}
-						} else {
-							// Expected receive error, set a short receive timeout.
-							dut.SetSockOptTimeval(
-								t,
-								socketFD,
-								unix.SOL_SOCKET,
-								unix.SO_RCVTIMEO,
-								&unix.Timeval{
-									Sec:  1,
-									Usec: 0,
-								},
-							)
-							ret, recvPayload, errno := dut.RecvWithErrno(context.Background(), t, socketFD, 100, 0)
-							if errno != unix.EAGAIN || errno != unix.EWOULDBLOCK {
-								t.Errorf("Recv got unexpected result, ret=%d, payload=%q, errno=%s", ret, recvPayload, errno)
-							}
-						}
-					},
-				)
+			t.Run(fmt.Sprintf("%s/bindTo=%s/sendTo=%s/bindToDevice=%t/expectData=%t", tc.proto.Name(), tc.bindTo, tc.sendTo, tc.bindToDevice, tc.expectData), func(t *testing.T) {
+				tc.proto.Recv(t, dut, tc)
 			})
 		}
 	})
 }
 
-func runTestCase(
+type udpConn interface {
+	SrcPort(*testing.T) uint16
+	SendFrame(*testing.T, testbench.Layers, ...testbench.Layer)
+	ExpectFrame(*testing.T, testbench.Layers, time.Duration) (testbench.Layers, error)
+	Close(*testing.T)
+}
+
+type udpTest struct{}
+
+func (*udpTest) Name() string { return "udp" }
+
+func (*udpTest) Send(t *testing.T, dut testbench.DUT, tc testCase) {
+	t.Helper()
+	udpTestCase(
+		t,
+		dut,
+		tc,
+		func(t *testing.T, dut testbench.DUT, conn udpConn, socketFD int32, tc testCase, payload []byte, layers testbench.Layers) {
+			var destSockaddr unix.Sockaddr
+			if sendTo4 := tc.sendTo.To4(); sendTo4 != nil {
+				addr := unix.SockaddrInet4{
+					Port: int(conn.SrcPort(t)),
+				}
+				copy(addr.Addr[:], sendTo4)
+				destSockaddr = &addr
+			} else {
+				addr := unix.SockaddrInet6{
+					Port:   int(conn.SrcPort(t)),
+					ZoneId: dut.Net.RemoteDevID,
+				}
+				copy(addr.Addr[:], tc.sendTo.To16())
+				destSockaddr = &addr
+			}
+			if got, want := dut.SendTo(t, socketFD, payload, 0, destSockaddr), len(payload); int(got) != want {
+				t.Fatalf("got dut.SendTo = %d, want %d", got, want)
+			}
+			layers = append(layers, &testbench.Payload{
+				Bytes: payload,
+			})
+			_, err := conn.ExpectFrame(t, layers, time.Second)
+
+			if !tc.expectData && err == nil {
+				t.Fatal("received unexpected packet, socket is not bound to device")
+			}
+			if err != nil && tc.expectData {
+				t.Fatal(err)
+			}
+		},
+	)
+}
+
+func (*udpTest) Recv(t *testing.T, dut testbench.DUT, tc testCase) {
+	t.Helper()
+	udpTestCase(
+		t,
+		dut,
+		tc,
+		func(t *testing.T, dut testbench.DUT, conn udpConn, socketFD int32, tc testCase, payload []byte, layers testbench.Layers) {
+			conn.SendFrame(t, layers, &testbench.Payload{Bytes: payload})
+
+			if tc.expectData {
+				got, want := dut.Recv(t, socketFD, int32(len(payload)+1), 0), payload
+				if diff := cmp.Diff(want, got); diff != "" {
+					t.Errorf("received payload does not match sent payload, diff (-want, +got):\n%s", diff)
+				}
+			} else {
+				// Expected receive error, set a short receive timeout.
+				dut.SetSockOptTimeval(
+					t,
+					socketFD,
+					unix.SOL_SOCKET,
+					unix.SO_RCVTIMEO,
+					&unix.Timeval{
+						Sec:  1,
+						Usec: 0,
+					},
+				)
+				ret, recvPayload, errno := dut.RecvWithErrno(context.Background(), t, socketFD, 100, 0)
+				if errno != unix.EAGAIN || errno != unix.EWOULDBLOCK {
+					t.Errorf("Recv got unexpected result, ret=%d, payload=%q, errno=%s", ret, recvPayload, errno)
+				}
+			}
+		},
+	)
+}
+
+func udpTestCase(
 	t *testing.T,
 	dut testbench.DUT,
 	tc testCase,
 	runTc func(t *testing.T, dut testbench.DUT, conn udpConn, socketFD int32, tc testCase, payload []byte, layers testbench.Layers),
 ) {
+	t.Helper()
 	var (
 		socketFD                 int32
 		outgoingUDP, incomingUDP testbench.UDP
@@ -276,54 +366,278 @@ func runTestCase(
 		dut.SetSockOpt(t, socketFD, unix.SOL_SOCKET, unix.SO_BINDTODEVICE, []byte(dut.Net.RemoteDevName))
 	}
 
-	var ethernetLayer testbench.Ether
+	var conn udpConn
+	var ipLayer testbench.Layer
+	if addr := tc.sendTo.To4(); addr != nil {
+		udpConn := dut.Net.NewUDPIPv4(t, outgoingUDP, incomingUDP)
+		conn = &udpConn
+		ipLayer = &testbench.IPv4{
+			DstAddr: testbench.Address(tcpip.Address(addr)),
+		}
+	} else {
+		udpConn := dut.Net.NewUDPIPv6(t, outgoingUDP, incomingUDP)
+		conn = &udpConn
+		ipLayer = &testbench.IPv6{
+			DstAddr: testbench.Address(tcpip.Address(tc.sendTo.To16())),
+		}
+	}
+	defer conn.Close(t)
+
+	expectedLayers := testbench.Layers{
+		expectedEthLayer(t, dut, tc, socketFD),
+		ipLayer,
+		&incomingUDP,
+	}
+
+	for name, payload := range map[string][]byte{
+		"empty":    nil,
+		"small":    []byte("hello world"),
+		"random1k": testbench.GenerateRandomPayload(t, 1<<10),
+		// Even though UDP allows larger datagrams we don't test it here as they
+		// need to be fragmented and written out as individual frames.
+	} {
+		t.Run(name, func(t *testing.T) {
+			runTc(t, dut, conn, socketFD, tc, payload, expectedLayers)
+		})
+	}
+}
+
+func expectedEthLayer(t *testing.T, dut testbench.DUT, tc testCase, socketFD int32) testbench.Layer {
+	t.Helper()
+	var dst *tcpip.LinkAddress
 	if tc.sendToBroadcast {
 		dut.SetSockOptInt(t, socketFD, unix.SOL_SOCKET, unix.SO_BROADCAST, 1)
 
 		// When sending to broadcast (subnet or limited), the expected ethernet
 		// address is also broadcast.
 		ethernetBroadcastAddress := header.EthernetBroadcastAddress
-		ethernetLayer.DstAddr = &ethernetBroadcastAddress
+		dst = &ethernetBroadcastAddress
 	} else if tc.sendTo.IsMulticast() {
 		ethernetMulticastAddress := header.EthernetAddressFromMulticastIPv4Address(tcpip.Address(tc.sendTo.To4()))
-		ethernetLayer.DstAddr = &ethernetMulticastAddress
+		dst = &ethernetMulticastAddress
 	}
-	expectedLayers := testbench.Layers{&ethernetLayer}
+	return &testbench.Ether{
+		DstAddr: dst,
+	}
+}
 
-	var conn udpConn
-	if sendTo4 := tc.sendTo.To4(); sendTo4 != nil {
-		v4Conn := dut.Net.NewUDPIPv4(t, outgoingUDP, incomingUDP)
-		conn = &v4Conn
-		expectedLayers = append(
-			expectedLayers,
-			&testbench.IPv4{
-				DstAddr: testbench.Address(tcpip.Address(sendTo4)),
+type ipConn interface {
+	CreateFrame(*testing.T, testbench.Layers, ...testbench.Layer) testbench.Layers
+	SendFrame(*testing.T, testbench.Layers)
+	ExpectFrame(*testing.T, testbench.Layers, time.Duration) (testbench.Layers, error)
+	Close(*testing.T)
+}
+
+type icmpTest struct{}
+
+func (*icmpTest) Name() string { return "icmp" }
+
+func (*icmpTest) Send(t *testing.T, dut testbench.DUT, tc testCase) {
+	t.Helper()
+	icmpTestCase(
+		t,
+		dut,
+		tc,
+		func(t *testing.T, dut testbench.DUT, conn ipConn, socketFD int32, tc testCase, layers testbench.Layers, ident uint16, payload []byte, protocol icmpProtocol) {
+			var destSockaddr unix.Sockaddr
+			if sendTo4 := tc.sendTo.To4(); sendTo4 != nil {
+				addr := unix.SockaddrInet4{}
+				copy(addr.Addr[:], sendTo4)
+				destSockaddr = &addr
+			} else {
+				addr := unix.SockaddrInet6{
+					ZoneId: dut.Net.RemoteDevID,
+				}
+				copy(addr.Addr[:], tc.sendTo.To16())
+				destSockaddr = &addr
+			}
+
+			icmpLayer := protocol.icmpLayer(ident, payload, icmpEchoRequest)
+			bytes, err := icmpLayer.ToBytes()
+			if err != nil {
+				t.Fatalf("icmpLayer.ToBytes() = %s", err)
+			}
+			if got, want := dut.SendTo(t, socketFD, bytes, 0, destSockaddr), len(bytes); int(got) != want {
+				t.Fatalf("got dut.SendTo = %d, want %d", got, want)
+			}
+
+			_, err = conn.ExpectFrame(t, append(layers, icmpLayer), time.Second)
+			if tc.expectData && err != nil {
+				t.Fatal(err)
+			}
+			if !tc.expectData && err == nil {
+				t.Fatal("received unexpected packet, socket is not bound to device")
+			}
+		},
+	)
+}
+
+func (*icmpTest) Recv(t *testing.T, dut testbench.DUT, tc testCase) {
+	t.Helper()
+	icmpTestCase(
+		t,
+		dut,
+		tc,
+		func(t *testing.T, dut testbench.DUT, conn ipConn, socketFD int32, tc testCase, layers testbench.Layers, ident uint16, payload []byte, protocol icmpProtocol) {
+			icmpLayer := protocol.icmpLayer(ident, payload, icmpEchoReply)
+			frame := conn.CreateFrame(t, layers[:2], icmpLayer)
+			conn.SendFrame(t, frame)
+
+			if tc.expectData {
+				payload, err := icmpLayer.ToBytes()
+				if err != nil {
+					t.Fatalf("icmpLayer.ToBytes() = %s", err)
+				}
+
+				got, want := dut.Recv(t, socketFD, int32(len(payload)+1), 0), payload
+				if diff := cmp.Diff(want, got); diff != "" {
+					t.Errorf("received payload does not match sent payload, diff (-want, +got):\n%s", diff)
+				}
+			} else {
+				// Expected receive error, set a short receive timeout.
+				dut.SetSockOptTimeval(
+					t,
+					socketFD,
+					unix.SOL_SOCKET,
+					unix.SO_RCVTIMEO,
+					&unix.Timeval{
+						Sec:  1,
+						Usec: 0,
+					},
+				)
+				ret, recvPayload, errno := dut.RecvWithErrno(context.Background(), t, socketFD, 100, 0)
+				if errno != unix.EAGAIN || errno != unix.EWOULDBLOCK {
+					t.Errorf("Recv got unexpected result, ret=%d, payload=%q, errno=%s", ret, recvPayload, errno)
+				}
+			}
+		},
+	)
+}
+
+type icmpProtocol struct {
+	proto     int32
+	domain    int32
+	conn      func(t *testing.T, net *testbench.DUTTestNet) ipConn
+	ipLayer   func() testbench.Layer
+	icmpLayer func(ident uint16, payload []byte, t icmpType) testbench.Layer
+}
+
+type icmpType int
+
+const (
+	icmpEchoRequest icmpType = iota
+	icmpEchoReply
+)
+
+func ipToProtocol(dst net.IP) icmpProtocol {
+	if addr := dst.To4(); addr != nil {
+		return icmpProtocol{
+			proto:  unix.IPPROTO_ICMP,
+			domain: unix.AF_INET,
+			conn: func(t *testing.T, net *testbench.DUTTestNet) ipConn {
+				conn := net.NewIPv4Conn(t, testbench.IPv4{}, testbench.IPv4{})
+				return &conn
 			},
-		)
-	} else {
-		v6Conn := dut.Net.NewUDPIPv6(t, outgoingUDP, incomingUDP)
-		conn = &v6Conn
-		expectedLayers = append(
-			expectedLayers,
-			&testbench.IPv6{
-				DstAddr: testbench.Address(tcpip.Address(tc.sendTo)),
+			ipLayer: func() testbench.Layer {
+				return &testbench.IPv4{
+					DstAddr: testbench.Address(tcpip.Address(addr)),
+				}
 			},
-		)
+			icmpLayer: func(ident uint16, payload []byte, t icmpType) testbench.Layer {
+				var typ header.ICMPv4Type
+				if t == icmpEchoRequest {
+					typ = header.ICMPv4Echo
+				} else {
+					typ = header.ICMPv4EchoReply
+				}
+				icmp := testbench.ICMPv4{
+					Type:    &typ,
+					Payload: payload,
+				}
+				if ident != 0 {
+					icmp.Ident = &ident
+				}
+				return &icmp
+			},
+		}
 	}
+	return icmpProtocol{
+		proto:  unix.IPPROTO_ICMPV6,
+		domain: unix.AF_INET6,
+		conn: func(t *testing.T, net *testbench.DUTTestNet) ipConn {
+			conn := net.NewIPv6Conn(t, testbench.IPv6{}, testbench.IPv6{})
+			return &conn
+		},
+		ipLayer: func() testbench.Layer {
+			return &testbench.IPv6{
+				DstAddr: testbench.Address(tcpip.Address(dst.To16())),
+			}
+		},
+		icmpLayer: func(ident uint16, payload []byte, t icmpType) testbench.Layer {
+			var typ header.ICMPv6Type
+			if t == icmpEchoRequest {
+				typ = header.ICMPv6EchoRequest
+			} else {
+				typ = header.ICMPv6EchoReply
+			}
+			icmp := testbench.ICMPv6{
+				Type:    &typ,
+				Payload: payload,
+			}
+			if ident != 0 {
+				icmp.Ident = &ident
+			}
+			return &icmp
+		},
+	}
+}
+
+func icmpTestCase(
+	t *testing.T,
+	dut testbench.DUT,
+	tc testCase,
+	runTc func(t *testing.T, dut testbench.DUT, conn ipConn, socketFD int32, tc testCase, layers testbench.Layers, ident uint16, payload []byte, protocol icmpProtocol),
+) {
+	t.Helper()
+
+	protocol := ipToProtocol(tc.sendTo)
+
+	var socketFD int32
+	var port uint16
+	if tc.bindTo != nil {
+		socketFD, port = dut.CreateBoundSocket(t, unix.SOCK_DGRAM, protocol.proto, tc.bindTo)
+		if port == 0 {
+			// The socket's port is the ICMP identifier used in the payload for
+			// echo requests and responses. This enables de-multiplexing for
+			// ICMP sockets. It should be non-zero.
+			t.Fatalf("got dut.CreateBoundSocket(...) = _, %d, want != 0", port)
+		}
+	} else {
+		// An unbound socket will auto-bind to INNADDR_ANY.
+		socketFD = dut.Socket(t, protocol.domain, unix.SOCK_DGRAM, protocol.proto)
+	}
+	defer dut.Close(t, socketFD)
+	if tc.bindToDevice {
+		dut.SetSockOpt(t, socketFD, unix.SOL_SOCKET, unix.SO_BINDTODEVICE, []byte(dut.Net.RemoteDevName))
+	}
+
+	layers := testbench.Layers{
+		expectedEthLayer(t, dut, tc, socketFD),
+		protocol.ipLayer(),
+	}
+
+	conn := protocol.conn(t, dut.Net)
 	defer conn.Close(t)
 
-	expectedLayers = append(expectedLayers, &incomingUDP)
-	for _, v := range []struct {
-		name    string
-		payload []byte
-	}{
-		{"emptypayload", nil},
-		{"small payload", []byte("hello world")},
-		{"1kPayload", testbench.GenerateRandomPayload(t, 1<<10)},
-		// Even though UDP allows larger dgrams we don't test it here as
-		// they need to be fragmented and written out as individual
-		// frames.
+	for name, payload := range map[string][]byte{
+		"empty":    nil,
+		"small":    []byte("hello world"),
+		"random1k": testbench.GenerateRandomPayload(t, 1<<10),
+		// Even though ICMP allows larger datagrams we don't test it here as
+		// they need to be fragmented and written out as individual frames.
 	} {
-		runTc(t, dut, conn, socketFD, tc, v.payload, expectedLayers)
+		t.Run(name, func(t *testing.T) {
+			runTc(t, dut, conn, socketFD, tc, layers, port, payload, protocol)
+		})
 	}
 }

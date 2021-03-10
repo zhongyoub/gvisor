@@ -126,7 +126,8 @@ func (e *endpoint) Close() {
 	e.shutdownFlags = tcpip.ShutdownRead | tcpip.ShutdownWrite
 	switch e.state {
 	case stateBound, stateConnected:
-		e.stack.UnregisterTransportEndpoint([]tcpip.NetworkProtocolNumber{e.NetProto}, e.TransProto, e.ID, e, ports.Flags{}, 0 /* bindToDevice */)
+		bindToDevice := tcpip.NICID(e.ops.GetBindToDevice())
+		e.stack.UnregisterTransportEndpoint([]tcpip.NetworkProtocolNumber{e.NetProto}, e.TransProto, e.ID, e, ports.Flags{}, bindToDevice)
 	}
 
 	// Close the receive list and drain it.
@@ -297,6 +298,9 @@ func (e *endpoint) write(p tcpip.Payloader, opts tcpip.WriteOptions) (int64, tcp
 		// Reject destination address if it goes through a different
 		// NIC than the endpoint was bound to.
 		nicID := to.NIC
+		if nicID == 0 {
+			nicID = tcpip.NICID(e.ops.GetBindToDevice())
+		}
 		if e.BindNICID != 0 {
 			if nicID != 0 && nicID != e.BindNICID {
 				return 0, &tcpip.ErrNoRoute{}
@@ -339,6 +343,34 @@ func (e *endpoint) write(p tcpip.Payloader, opts tcpip.WriteOptions) (int64, tcp
 	}
 
 	return int64(len(v)), nil
+}
+
+// OnReuseAddressSet implements SocketOptionsHandler.OnReuseAddressSet.
+func (*endpoint) OnReuseAddressSet(bool) {}
+
+// OnReusePortSet implements SocketOptionsHandler.OnReusePortSet.
+func (*endpoint) OnReusePortSet(bool) {}
+
+// OnKeepAliveSet implements SocketOptionsHandler.OnKeepAliveSet.
+func (*endpoint) OnKeepAliveSet(bool) {}
+
+// OnDelayOptionSet implements SocketOptionsHandler.OnDelayOptionSet.
+func (*endpoint) OnDelayOptionSet(bool) {}
+
+// OnCorkOptionSet implements SocketOptionsHandler.OnCorkOptionSet.
+func (*endpoint) OnCorkOptionSet(bool) {}
+
+// UpdateLastError implements SocketOptionsHandler.UpdateLastError.
+func (*endpoint) UpdateLastError(tcpip.Error) {}
+
+// HasNIC implements SocketOptionsHandler.HasNIC.
+func (e *endpoint) HasNIC(id int32) bool {
+	return id == 0 || e.stack.HasNIC(tcpip.NICID(id))
+}
+
+// OnSetSendBufferSize implements SocketOptionsHandler.OnSetSendBufferSize.
+func (*endpoint) OnSetSendBufferSize(v int64) (newSz int64) {
+	return v
 }
 
 // SetSockOpt sets a socket option.
@@ -606,17 +638,18 @@ func (*endpoint) Accept(*tcpip.FullAddress) (tcpip.Endpoint, *waiter.Queue, tcpi
 }
 
 func (e *endpoint) registerWithStack(nicID tcpip.NICID, netProtos []tcpip.NetworkProtocolNumber, id stack.TransportEndpointID) (stack.TransportEndpointID, tcpip.Error) {
+	bindToDevice := tcpip.NICID(e.ops.GetBindToDevice())
 	if id.LocalPort != 0 {
 		// The endpoint already has a local port, just attempt to
 		// register it.
-		err := e.stack.RegisterTransportEndpoint(netProtos, e.TransProto, id, e, ports.Flags{}, 0 /* bindToDevice */)
+		err := e.stack.RegisterTransportEndpoint(netProtos, e.TransProto, id, e, ports.Flags{}, bindToDevice)
 		return id, err
 	}
 
 	// We need to find a port for the endpoint.
 	_, err := e.stack.PickEphemeralPort(func(p uint16) (bool, tcpip.Error) {
 		id.LocalPort = p
-		err := e.stack.RegisterTransportEndpoint(netProtos, e.TransProto, id, e, ports.Flags{}, 0 /* bindtodevice */)
+		err := e.stack.RegisterTransportEndpoint(netProtos, e.TransProto, id, e, ports.Flags{}, bindToDevice)
 		switch err.(type) {
 		case nil:
 			return true, nil
