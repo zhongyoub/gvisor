@@ -82,6 +82,19 @@ var Haswell2core = CPU{
 	ThreadsPerCore: 1,
 }
 
+// AMD2 is an two core AMD machine.
+var AMD2 = CPU{
+	Name:           "AMD",
+	VendorID:       "AuthenticAMD",
+	Family:         23,
+	Model:          49,
+	ModelName:      "AMD EPYC 7B12",
+	Bugs:           "sysret_ss_attrs spectre_v1 spectre_v2 spec_store_bypass",
+	PhysicalCores:  1,
+	Cores:          1,
+	ThreadsPerCore: 2,
+}
+
 // AMD8 is an eight core AMD machine.
 var AMD8 = CPU{
 	Name:           "AMD",
