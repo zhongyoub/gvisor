@@ -36,7 +36,10 @@ message MetricMetadata {
   // the monitoring system.
   bool sync = 4;
 
-  enum Type { TYPE_UINT64 = 0; }
+  enum Type {
+    TYPE_UINT64 = 0;
+    TYPE_SENTRYCOUNTER = 1;
+  }
 
   // type is the type of the metric value.
   Type type = 5;
@@ -56,6 +59,28 @@ message MetricRegistration {
   repeated MetricMetadata metrics = 1;
 }
 
+// CounterRow contains name and value of the counter field.
+message CounterRow {
+  // counter_name is the name of the counter field.
+  string counter_name = 1;
+
+  // value is the value of counter field. It can either be uint64 or another
+  // counter.
+  oneof value {
+    uint64 counter_value = 2;
+    SentryCounter sentry_counter = 3;
+  }
+}
+
+// SentryCounter contains the name and multiple counter fields.
+message SentryCounter {
+  // name is the unique name for the type of counter fields.
+  string name = 1;
+
+  // counter_row contains counter fields.
+  repeated CounterRow counter_row = 2;
+}
+
 // MetricValue the value of a metric at a single point in time.
 message MetricValue {
   // name is the unique name of the metric, as in MetricMetadata.
@@ -65,6 +90,7 @@ message MetricValue {
   // depends on the type of the metric.
   oneof value {
     uint64 uint64_value = 2;
+    SentryCounter sentry_counter = 3;
   }
 }
 

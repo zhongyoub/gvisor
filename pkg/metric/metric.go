@@ -48,6 +48,19 @@ type Uint64Metric struct {
 	value uint64
 }
 
+// CounterMetric encapsulates a counter metric to be monitored. We currently
+// support only one level of nesting. For multiple levels, this struct should
+// be modified.
+//
+// Metrics are not saved across save/restore and thus reset to zero on restore.
+type CounterMetric struct {
+	// counterMu protects the map below.
+	counterMu sync.RWMutex `state:"nosave"`
+
+	// counters is the map of fields within the counter.
+	counters map[string]uint64
+}
+
 var (
 	// initialized indicates that all metrics are registered. allMetrics is
 	// immutable once initialized is true.
@@ -70,6 +83,9 @@ func Initialize() {
 
 	m := pb.MetricRegistration{}
 	for _, v := range allMetrics.m {
+		m.Metrics = append(m.Metrics, v.metadata)
+	}
+	for _, v := range allMetrics.c {
 		m.Metrics = append(m.Metrics, v.metadata)
 	}
 	eventchannel.Emit(&m)
@@ -184,29 +200,154 @@ func (m *Uint64Metric) IncrementBy(v uint64) {
 	atomic.AddUint64(&m.value, v)
 }
 
+type customCounterMetric struct {
+	// metadata describes the metric. It is immutable.
+	metadata *pb.MetricMetadata
+
+	// value returns the current value of the metric.
+	value func(string) uint64
+
+	values func() map[string]uint64
+}
+
+// RegisterCustomCounterMetric registers a counter metric with the given name.
+//
+// Register must only be called at init and will return and error if called
+// after Initialized.
+//
+// Preconditions:
+// * name must be globally unique.
+// * Initialize/Disable have not been called.
+func RegisterCustomCounterMetric(name string, cumulative, sync bool, units pb.MetricMetadata_Units, description string, value func(string) uint64, values func() map[string]uint64) error {
+	if initialized {
+		return ErrInitializationDone
+	}
+
+	if _, ok := allMetrics.c[name]; ok {
+		return ErrNameInUse
+	}
+
+	allMetrics.c[name] = customCounterMetric{
+		metadata: &pb.MetricMetadata{
+			Name:        name,
+			Description: description,
+			Cumulative:  cumulative,
+			Sync:        sync,
+			Type:        pb.MetricMetadata_TYPE_SENTRYCOUNTER,
+			Units:       units,
+		},
+		value:  value,
+		values: values,
+	}
+	return nil
+}
+
+// MustRegisterCustomCounterMetric calls RegisterCustomCounterMetric and panics
+// if it returns an error.
+func MustRegisterCustomCounterMetric(name string, cumulative, sync bool, description string, value func(string) uint64, values func() map[string]uint64) {
+	if err := RegisterCustomCounterMetric(name, cumulative, sync, pb.MetricMetadata_UNITS_NONE, description, value, values); err != nil {
+		panic(fmt.Sprintf("Unable to register metric %q: %v", name, err))
+	}
+}
+
+// NewCounterMetric creates and registers a new cumulative metric with the given
+// name.
+//
+// Metrics must be statically defined (i.e., at init).
+func NewCounterMetric(name string, sync bool, units pb.MetricMetadata_Units, description string) (*CounterMetric, error) {
+	m := CounterMetric{
+		counters: make(map[string]uint64),
+	}
+	return &m, RegisterCustomCounterMetric(name, true /* cumulative */, sync, units, description, m.Value, m.Values)
+}
+
+// MustCreateNewCounterMetric calls NewCounterMetric and panics if it returns an
+// error.
+func MustCreateNewCounterMetric(name string, sync bool, description string) *CounterMetric {
+	m, err := NewCounterMetric(name, sync, pb.MetricMetadata_UNITS_NONE, description)
+	if err != nil {
+		panic(fmt.Sprintf("Unable to create metric %q: %v", name, err))
+	}
+	return m
+}
+
+// Values returns all the fields of counter metric.
+func (m *CounterMetric) Values() map[string]uint64 {
+	m.counterMu.RLock()
+	defer m.counterMu.RUnlock()
+
+	values := make(map[string]uint64)
+	for key, val := range m.counters {
+		values[key] = val
+	}
+	return values
+}
+
+// Value returns the current value of the field inside counter metric.
+func (m *CounterMetric) Value(counterName string) uint64 {
+	m.counterMu.RLock()
+	defer m.counterMu.RUnlock()
+
+	if _, ok := m.counters[counterName]; !ok {
+		return 0
+	}
+	return m.counters[counterName]
+}
+
+// Increment increments the metric by 1.
+func (m *CounterMetric) Increment(counterName string) {
+	m.counterMu.Lock()
+	if _, ok := m.counters[counterName]; !ok {
+		m.counters[counterName] = 0
+	}
+	m.counters[counterName]++
+	m.counterMu.Unlock()
+}
+
+// IncrementBy increments the metric by v.
+func (m *CounterMetric) IncrementBy(v uint64, counterName string) {
+	m.counterMu.Lock()
+	if _, ok := m.counters[counterName]; !ok {
+		m.counters[counterName] = 0
+	}
+	m.counters[counterName] += v
+	m.counterMu.Unlock()
+}
+
 // metricSet holds named metrics.
 type metricSet struct {
 	m map[string]customUint64Metric
+	c map[string]customCounterMetric
 }
 
 // makeMetricSet returns a new metricSet.
 func makeMetricSet() metricSet {
 	return metricSet{
 		m: make(map[string]customUint64Metric),
+		c: make(map[string]customCounterMetric),
 	}
 }
 
 // Values returns a snapshot of all values in m.
 func (m *metricSet) Values() metricValues {
-	vals := make(metricValues)
+	vals := metricValues{
+		m: make(map[string]uint64),
+		c: make(map[string]map[string]uint64),
+	}
 	for k, v := range m.m {
-		vals[k] = v.value()
+		vals.m[k] = v.value()
+	}
+	for k, v := range m.c {
+		vals.c[k] = v.values()
 	}
 	return vals
 }
 
 // metricValues contains a copy of the values of all metrics.
-type metricValues map[string]uint64
+type metricValues struct {
+	m map[string]uint64
+	c map[string]map[string]uint64
+}
 
 var (
 	// emitMu protects metricsAtLastEmit and ensures that all emitted
@@ -233,15 +374,32 @@ func EmitMetricUpdate() {
 	snapshot := allMetrics.Values()
 
 	m := pb.MetricUpdate{}
-	for k, v := range snapshot {
-		// On the first call metricsAtLastEmit will be empty. Include
-		// all metrics then.
-		if prev, ok := metricsAtLastEmit[k]; !ok || prev != v {
+	// On the first call metricsAtLastEmit will be empty. Include all
+	// metrics then.
+	for k, v := range snapshot.m {
+		if prev, ok := metricsAtLastEmit.m[k]; !ok || prev != v {
 			m.Metrics = append(m.Metrics, &pb.MetricValue{
 				Name:  k,
 				Value: &pb.MetricValue_Uint64Value{v},
 			})
 		}
+	}
+	for k, v := range snapshot.c {
+		var sentryCounter pb.SentryCounter
+		if prev, ok := metricsAtLastEmit.c[k]; ok {
+			for key, val := range v {
+				if val != prev[key] {
+					sentryCounter.CounterRow = append(sentryCounter.CounterRow, &pb.CounterRow{
+						CounterName: key,
+						Value:       &pb.CounterRow_CounterValue{val},
+					})
+				}
+			}
+		}
+		m.Metrics = append(m.Metrics, &pb.MetricValue{
+			Name:  k,
+			Value: &pb.MetricValue_SentryCounter{&sentryCounter},
+		})
 	}
 
 	metricsAtLastEmit = snapshot

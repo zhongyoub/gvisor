@@ -59,8 +59,9 @@ func reset() {
 }
 
 const (
-	fooDescription = "Foo!"
-	barDescription = "Bar Baz"
+	fooDescription     = "Foo!"
+	barDescription     = "Bar Baz"
+	counterDescription = "Counter"
 )
 
 func TestInitialize(t *testing.T) {
@@ -76,6 +77,11 @@ func TestInitialize(t *testing.T) {
 		t.Fatalf("NewUint64Metric got err %v want nil", err)
 	}
 
+	_, err = NewCounterMetric("/counter", false, pb.MetricMetadata_UNITS_NONE, counterDescription)
+	if err != nil {
+		t.Fatalf("NewCounterMetric got err %v want nil", err)
+	}
+
 	Initialize()
 
 	if len(emitter) != 1 {
@@ -87,15 +93,16 @@ func TestInitialize(t *testing.T) {
 		t.Fatalf("emitter %v got %T want pb.MetricRegistration", emitter[0], emitter[0])
 	}
 
-	if len(mr.Metrics) != 2 {
+	if len(mr.Metrics) != 3 {
 		t.Errorf("MetricRegistration got %d metrics want 2", len(mr.Metrics))
 	}
 
 	foundFoo := false
 	foundBar := false
+	foundCounter := false
 	for _, m := range mr.Metrics {
-		if m.Type != pb.MetricMetadata_TYPE_UINT64 {
-			t.Errorf("Metadata %+v Type got %v want %v", m, m.Type, pb.MetricMetadata_TYPE_UINT64)
+		if m.Type != pb.MetricMetadata_TYPE_UINT64 && m.Type != pb.MetricMetadata_TYPE_SENTRYCOUNTER {
+			t.Errorf("Metadata %+v Type got %v want pb.MetricMetadata_TYPE_UINT64 or pb.MetricMetadata_TYPE_SENTRYCOUNTER", m, m.Type)
 		}
 		if !m.Cumulative {
 			t.Errorf("Metadata %+v Cumulative got false want true", m)
@@ -124,6 +131,17 @@ func TestInitialize(t *testing.T) {
 			if m.Units != pb.MetricMetadata_UNITS_NANOSECONDS {
 				t.Errorf("/bar %+v Units got %v want %v", m, m.Units, pb.MetricMetadata_UNITS_NANOSECONDS)
 			}
+		case "/counter":
+			foundCounter = true
+			if m.Description != counterDescription {
+				t.Errorf("/counter %+v Description got %q want %q", m, m.Description, counterDescription)
+			}
+			if m.Sync {
+				t.Errorf("/counter %+v Sync got true want false", m)
+			}
+			if m.Units != pb.MetricMetadata_UNITS_NONE {
+				t.Errorf("/counter %+v Units got %v want %v", m, m.Units, pb.MetricMetadata_UNITS_NONE)
+			}
 		}
 	}
 
@@ -132,6 +150,9 @@ func TestInitialize(t *testing.T) {
 	}
 	if !foundBar {
 		t.Errorf("/bar not found: %+v", emitter)
+	}
+	if !foundCounter {
+		t.Errorf("/counter not found: %+v", emitter)
 	}
 }
 
@@ -146,6 +167,11 @@ func TestDisable(t *testing.T) {
 	_, err = NewUint64Metric("/bar", true, pb.MetricMetadata_UNITS_NONE, barDescription)
 	if err != nil {
 		t.Fatalf("NewUint64Metric got err %v want nil", err)
+	}
+
+	_, err = NewCounterMetric("/counter", false, pb.MetricMetadata_UNITS_NONE, counterDescription)
+	if err != nil {
+		t.Fatalf("NewCounterMetric got err %v want nil", err)
 	}
 
 	Disable()
@@ -177,6 +203,11 @@ func TestEmitMetricUpdate(t *testing.T) {
 		t.Fatalf("NewUint64Metric got err %v want nil", err)
 	}
 
+	counter, err := NewCounterMetric("/counter", false, pb.MetricMetadata_UNITS_NONE, counterDescription)
+	if err != nil {
+		t.Fatalf("NewCounterMetric got err %v want nil", err)
+	}
+
 	Initialize()
 
 	// Don't care about the registration metrics.
@@ -192,27 +223,46 @@ func TestEmitMetricUpdate(t *testing.T) {
 		t.Fatalf("emitter %v got %T want pb.MetricUpdate", emitter[0], emitter[0])
 	}
 
-	if len(update.Metrics) != 2 {
-		t.Errorf("MetricUpdate got %d metrics want 2", len(update.Metrics))
+	if len(update.Metrics) != 3 {
+		t.Errorf("MetricUpdate got %d metrics want 3", len(update.Metrics))
 	}
 
 	// Both are included for their initial values.
 	foundFoo := false
 	foundBar := false
+	foundCounter := false
 	for _, m := range update.Metrics {
 		switch m.Name {
 		case "/foo":
 			foundFoo = true
+			uv, ok := m.Value.(*pb.MetricValue_Uint64Value)
+			if !ok {
+				t.Errorf("%+v: value %v got %T want pb.MetricValue_Uint64Value", m, m.Value, m.Value)
+				continue
+			}
+			if uv.Uint64Value != 0 {
+				t.Errorf("%v: Value got %v want 0", m, uv.Uint64Value)
+			}
 		case "/bar":
 			foundBar = true
-		}
-		uv, ok := m.Value.(*pb.MetricValue_Uint64Value)
-		if !ok {
-			t.Errorf("%+v: value %v got %T want pb.MetricValue_Uint64Value", m, m.Value, m.Value)
-			continue
-		}
-		if uv.Uint64Value != 0 {
-			t.Errorf("%v: Value got %v want 0", m, uv.Uint64Value)
+			uv, ok := m.Value.(*pb.MetricValue_Uint64Value)
+			if !ok {
+				t.Errorf("%+v: value %v got %T want pb.MetricValue_Uint64Value", m, m.Value, m.Value)
+				continue
+			}
+			if uv.Uint64Value != 0 {
+				t.Errorf("%v: Value got %v want 0", m, uv.Uint64Value)
+			}
+		case "/counter":
+			foundCounter = true
+			uv, ok := m.Value.(*pb.MetricValue_SentryCounter)
+			if !ok {
+				t.Errorf("%+v: value %v got %T want pb.MetricValue_CounterValue", m, m.Value, m.Value)
+				continue
+			}
+			if len(uv.SentryCounter.CounterRow) != 0 {
+				t.Errorf("%v: Value got %v want 0", m, len(uv.SentryCounter.CounterRow))
+			}
 		}
 	}
 
@@ -222,9 +272,16 @@ func TestEmitMetricUpdate(t *testing.T) {
 	if !foundBar {
 		t.Errorf("/bar not found: %+v", emitter)
 	}
+	if !foundCounter {
+		t.Errorf("/counter not found: %+v", emitter)
+	}
 
 	// Increment foo. Only it is included in the next update.
 	foo.Increment()
+
+	counter.Increment("counter1")
+
+	counter.IncrementBy(4, "counter1")
 
 	emitter.Reset()
 	EmitMetricUpdate()
@@ -238,21 +295,42 @@ func TestEmitMetricUpdate(t *testing.T) {
 		t.Fatalf("emitter %v got %T want pb.MetricUpdate", emitter[0], emitter[0])
 	}
 
-	if len(update.Metrics) != 1 {
-		t.Errorf("MetricUpdate got %d metrics want 1", len(update.Metrics))
+	if len(update.Metrics) != 2 {
+		t.Errorf("MetricUpdate got %d metrics want 2", len(update.Metrics))
 	}
 
-	m := update.Metrics[0]
+	for i := 0; i < len(update.Metrics); i++ {
+		m := update.Metrics[i]
 
-	if m.Name != "/foo" {
-		t.Errorf("Metric %+v name got %q want '/foo'", m, m.Name)
-	}
+		if m.Name != "/foo" && m.Name != "/counter" {
+			t.Errorf("Metric %+v name got %q want '/foo'", m, m.Name)
+		}
 
-	uv, ok := m.Value.(*pb.MetricValue_Uint64Value)
-	if !ok {
-		t.Errorf("%+v: value %v got %T want pb.MetricValue_Uint64Value", m, m.Value, m.Value)
-	}
-	if uv.Uint64Value != 1 {
-		t.Errorf("%v: Value got %v want 1", m, uv.Uint64Value)
+		if m.Name == "/foo" {
+			uv, ok := m.Value.(*pb.MetricValue_Uint64Value)
+			if !ok {
+				t.Errorf("%+v: value %v got %T want pb.MetricValue_Uint64Value", m, m.Value, m.Value)
+			}
+			if uv.Uint64Value != 1 {
+				t.Errorf("%v: Value got %v want 1", m, uv.Uint64Value)
+			}
+		}
+		if m.Name == "/counter" {
+			uv, ok := m.Value.(*pb.MetricValue_SentryCounter)
+			if !ok {
+				t.Errorf("%+v: value %v got %T want pb.MetricValue_CounterValue", m, m.Value, m.Value)
+			}
+			name := uv.SentryCounter.CounterRow[0].CounterName
+			if name != "counter1" {
+				t.Errorf("%v: Name got %v want counter1", m, name)
+			}
+			val, ok := uv.SentryCounter.CounterRow[0].Value.(*pb.CounterRow_CounterValue)
+			if !ok {
+				t.Errorf("%+v: value %v got %T want pb.CounterRow_CounterValue", m, val, val)
+			}
+			if val.CounterValue != 5 {
+				t.Errorf("%v: Value got %v want 5", m, val.CounterValue)
+			}
+		}
 	}
 }
