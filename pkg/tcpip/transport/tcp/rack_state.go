@@ -20,10 +20,10 @@ import (
 
 // saveXmitTime is invoked by stateify.
 func (rc *rackControl) saveXmitTime() unixTime {
-	return unixTime{rc.xmitTime.Unix(), rc.xmitTime.UnixNano()}
+	return unixTime{rc.XmitTime.Unix(), rc.XmitTime.UnixNano()}
 }
 
 // loadXmitTime is invoked by stateify.
 func (rc *rackControl) loadXmitTime(unix unixTime) {
-	rc.xmitTime = time.Unix(unix.second, unix.nano)
+	rc.XmitTime = time.Unix(unix.second, unix.nano)
 }

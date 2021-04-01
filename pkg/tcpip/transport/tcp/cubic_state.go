@@ -20,10 +20,10 @@ import (
 
 // saveT is invoked by stateify.
 func (c *cubicState) saveT() unixTime {
-	return unixTime{c.t.Unix(), c.t.UnixNano()}
+	return unixTime{c.T.Unix(), c.T.UnixNano()}
 }
 
 // loadT is invoked by stateify.
 func (c *cubicState) loadT(unix unixTime) {
-	c.t = time.Unix(unix.second, unix.nano)
+	c.T = time.Unix(unix.second, unix.nano)
 }

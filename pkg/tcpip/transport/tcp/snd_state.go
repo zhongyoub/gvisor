@@ -26,22 +26,22 @@ type unixTime struct {
 
 // saveLastSendTime is invoked by stateify.
 func (s *sender) saveLastSendTime() unixTime {
-	return unixTime{s.lastSendTime.Unix(), s.lastSendTime.UnixNano()}
+	return unixTime{s.LastSendTime.Unix(), s.LastSendTime.UnixNano()}
 }
 
 // loadLastSendTime is invoked by stateify.
 func (s *sender) loadLastSendTime(unix unixTime) {
-	s.lastSendTime = time.Unix(unix.second, unix.nano)
+	s.LastSendTime = time.Unix(unix.second, unix.nano)
 }
 
 // saveRttMeasureTime is invoked by stateify.
 func (s *sender) saveRttMeasureTime() unixTime {
-	return unixTime{s.rttMeasureTime.Unix(), s.rttMeasureTime.UnixNano()}
+	return unixTime{s.RTTMeasureTime.Unix(), s.RTTMeasureTime.UnixNano()}
 }
 
 // loadRttMeasureTime is invoked by stateify.
 func (s *sender) loadRttMeasureTime(unix unixTime) {
-	s.rttMeasureTime = time.Unix(unix.second, unix.nano)
+	s.RTTMeasureTime = time.Unix(unix.second, unix.nano)
 }
 
 // afterLoad is invoked by stateify.
