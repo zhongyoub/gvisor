@@ -180,10 +180,6 @@ smoke-tests: ## Runs a simple smoke test after build runsc.
 	@$(call run,//runsc,--alsologtostderr --network none --debug --TESTONLY-unsafe-nonroot=true --rootless do true)
 .PHONY: smoke-tests
 
-fuse-tests:
-	@$(call test,--test_tag_filters=fuse $(PARTITIONS) test/fuse/...)
-.PHONY: fuse-tests
-
 unit-tests: ## Local package unit tests in pkg/..., tools/.., etc.
 	@$(call test,//:all pkg/... tools/...)
 .PHONY: unit-tests
@@ -205,15 +201,19 @@ network-tests: ## Run all networking integration tests.
 network-tests: iptables-tests packetdrill-tests packetimpact-tests
 .PHONY: network-tests
 
+# The set of system call targets.
+SYSCALL_TARGETS := test/syscalls/... test/fuse/...
+
 syscall-%-tests:
-	@$(call test,--test_tag_filters=runsc_$* $(PARTITIONS) test/syscalls/...)
+	@$(call test,--test_tag_filters=runsc_$* $(PARTITIONS) $(SYSCALL_TARGETS))
 
 syscall-native-tests:
-	@$(call test,--test_tag_filters=native $(PARTITIONS) test/syscalls/...)
+	@$(call test,--test_tag_filters=native $(PARTITIONS) $(SYSCALL_TARGETS))
 .PHONY: syscall-native-tests
 
 syscall-tests: ## Run all system call tests.
-	@$(call test,$(PARTITIONS) test/syscalls/...)
+	@$(call test,$(PARTITIONS) $(SYSCALL_TARGETS))
+.PHONY: syscall-tests
 
 %-runtime-tests: load-runtimes_% $(RUNTIME_BIN)
 	@$(call install_runtime,$(RUNTIME),) # Ensure flags are cleared.
