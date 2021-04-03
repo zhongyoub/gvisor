@@ -34,6 +34,8 @@ class Cgroup {
 
   uint64_t id() const { return id_; }
 
+  std::string Path() const { return cgroup_path_; }
+
   std::string Relpath(absl::string_view leaf) const {
     return JoinPath(cgroup_path_, leaf);
   }
@@ -44,6 +46,14 @@ class Cgroup {
   // Reads the contents of a cgroup control with the given name, and attempts
   // to parse it as an integer.
   PosixErrorOr<int64_t> ReadIntegerControlFile(absl::string_view name) const;
+
+  // Writes a string to a cgroup control file.
+  PosixError WriteControlFile(absl::string_view name,
+                              const std::string& value) const;
+
+  // Writes an integer value to a cgroup control file.
+  PosixError WriteIntegerControlFile(absl::string_view name,
+                                     int64_t value) const;
 
   // Returns the thread ids of the leaders of thread groups managed by this
   // cgroup.
