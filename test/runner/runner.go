@@ -48,7 +48,6 @@ var (
 	overlay    = flag.Bool("overlay", false, "wrap filesystem mounts with writable tmpfs overlay")
 	vfs2       = flag.Bool("vfs2", false, "enable VFS2")
 	fuse       = flag.Bool("fuse", false, "enable FUSE")
-	runscPath  = flag.String("runsc", "", "path to runsc binary")
 
 	addUDSTree = flag.Bool("add-uds-tree", false, "expose a tree of UDS utilities for use in tests")
 	// TODO(gvisor.dev/issue/4572): properly support leak checking for runsc, and
@@ -67,11 +66,10 @@ func main() {
 		log.SetLevel(log.Debug)
 	}
 
-	if *platform != "native" && *runscPath == "" {
+	if *platform != "native" {
 		if err := testutil.ConfigureExePath(); err != nil {
 			panic(err.Error())
 		}
-		*runscPath = specutils.ExePath
 	}
 
 	// Make sure stdout and stderr are opened with O_APPEND, otherwise logs
@@ -262,7 +260,7 @@ func runRunsc(spec *specs.Spec) error {
 	// Current process doesn't have CAP_SYS_ADMIN, create user namespace and run
 	// as root inside that namespace to get it.
 	rArgs := append(args, "run", "--bundle", bundleDir, id)
-	cmd := exec.Command(*runscPath, rArgs...)
+	cmd := exec.Command(specutils.ExePath, rArgs...)
 	cmd.SysProcAttr = &unix.SysProcAttr{
 		Cloneflags: unix.CLONE_NEWUSER | unix.CLONE_NEWNS,
 		// Set current user/group as root inside the namespace.
@@ -294,7 +292,7 @@ func runRunsc(spec *specs.Spec) error {
 		dArgs := append([]string{}, args...)
 		dArgs = append(dArgs, "-alsologtostderr=true", "debug", "--stacks", id)
 		go func(dArgs []string) {
-			debug := exec.Command(*runscPath, dArgs...)
+			debug := exec.Command(specutils.ExePath, dArgs...)
 			debug.Stdout = os.Stdout
 			debug.Stderr = os.Stderr
 			debug.Run()
@@ -312,7 +310,7 @@ func runRunsc(spec *specs.Spec) error {
 		dArgs = append(args, "debug",
 			fmt.Sprintf("--signal=%d", unix.SIGTERM),
 			id)
-		signal := exec.Command(*runscPath, dArgs...)
+		signal := exec.Command(specutils.ExePath, dArgs...)
 		signal.Stdout = os.Stdout
 		signal.Stderr = os.Stderr
 		signal.Run()

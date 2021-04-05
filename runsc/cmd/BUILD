@@ -25,6 +25,7 @@ go_library(
         "mitigate.go",
         "path.go",
         "pause.go",
+        "platforms.go",
         "ps.go",
         "restore.go",
         "resume.go",

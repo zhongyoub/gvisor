@@ -99,6 +99,8 @@ endif
 ##     RUNTIME_BIN     - The runtime binary (default: $RUNTIME_DIR/runsc).
 ##     RUNTIME_LOG_DIR - The logs directory (default: $RUNTIME_DIR/logs).
 ##     RUNTIME_LOGS    - The log pattern (default: $RUNTIME_LOG_DIR/runsc.log.%TEST%.%TIMESTAMP%.%COMMAND%).
+##     STAGED_BINARIES - A tarball of staged binaries. If this is set, then binaries
+##                       will be installed from this staged bundle instead of built.
 ##
 ifeq (,$(BRANCH_NAME))
 RUNTIME     := runsc
@@ -113,7 +115,12 @@ RUNTIME_LOGS    := $(RUNTIME_LOG_DIR)/runsc.log.%TEST%.%TIMESTAMP%.%COMMAND%
 
 $(RUNTIME_BIN): # See below.
 	@mkdir -p "$(RUNTIME_DIR)"
+ifeq (,$(STAGED_BINARIES))
 	@$(call copy,//runsc,$(RUNTIME_BIN))
+else
+	gsutil cat "${STAGED_BINARIES}" | \
+		tar -C "$(RUNTIME_DIR)" -zxvf - runsc
+endif
 .PHONY: $(RUNTIME_BIN) # Real file, but force rebuild.
 
 # Configure helpers for below.
@@ -180,16 +187,16 @@ smoke-tests: ## Runs a simple smoke test after build runsc.
 	@$(call run,//runsc,--alsologtostderr --network none --debug --TESTONLY-unsafe-nonroot=true --rootless do true)
 .PHONY: smoke-tests
 
-fuse-tests:
-	@$(call test,--test_tag_filters=fuse $(PARTITIONS) test/fuse/...)
+fuse-tests: $(RUNTIME_BIN)
+	@$(call test,--test_tag_filters=fuse --test_arg=--runsc=$(RUNTIME_BIN) $(PARTITIONS) test/fuse/...)
 .PHONY: fuse-tests
 
 unit-tests: ## Local package unit tests in pkg/..., tools/.., etc.
 	@$(call test,//:all pkg/... tools/...)
 .PHONY: unit-tests
 
-runsc-tests: ## Run all tests in runsc/...
-	@$(call test,runsc/...)
+runsc-tests: $(RUNTIME_BIN) ## Run all tests in runsc/...
+	@$(call test,--test_arg=--runsc=$(RUNTIME_BIN) runsc/...)
 .PHONY: runsc-tests
 
 tests: ## Runs all unit tests and syscall tests.
@@ -205,15 +212,15 @@ network-tests: ## Run all networking integration tests.
 network-tests: iptables-tests packetdrill-tests packetimpact-tests
 .PHONY: network-tests
 
-syscall-%-tests:
-	@$(call test,--test_tag_filters=runsc_$* $(PARTITIONS) test/syscalls/...)
+syscall-%-tests: $(RUNTIME_BIN) ## Run platform-specific system call tests.
+	@$(call test,--test_tag_filters=runsc_$* --test_arg=--runsc=$(RUNTIME_BIN) $(PARTITIONS) test/syscalls/...)
 
 syscall-native-tests:
 	@$(call test,--test_tag_filters=native $(PARTITIONS) test/syscalls/...)
 .PHONY: syscall-native-tests
 
-syscall-tests: ## Run all system call tests.
-	@$(call test,$(PARTITIONS) test/syscalls/...)
+syscall-tests: $(RUNTIME_BIN) ## Run all system call tests.
+	@$(call test,$(PARTITIONS) --test_arg=--runsc=$(RUNTIME_BIN) test/syscalls/...)
 
 %-runtime-tests: load-runtimes_% $(RUNTIME_BIN)
 	@$(call install_runtime,$(RUNTIME),) # Ensure flags are cleared.
@@ -223,17 +230,17 @@ syscall-tests: ## Run all system call tests.
 	@$(call install_runtime,$(RUNTIME),--vfs2)
 	@$(call test_runtime,$(RUNTIME),--test_timeout=10800 //test/runtimes:$*)
 
-do-tests:
-	@$(call run,//runsc,--rootless do true)
-	@$(call run,//runsc,--rootless -network=none do true)
-	@$(call sudo,//runsc,do true)
+do-tests: $(RUNTIME_BIN)
+	@$(RUNTIME_BIN) --rootless do true
+	@$(RUNTIME_BIN) --rootless -network=none do true
+	@sudo $(RUNTIME_BIN) do true
 .PHONY: do-tests
 
 arm-qemu-smoke-test: BAZEL_OPTIONS=--config=cross-aarch64
-arm-qemu-smoke-test: load-arm-qemu
+arm-qemu-smoke-test: $(RUNTIME_BIN) load-arm-qemu
 	export T=$$(mktemp -d --tmpdir release.XXXXXX); \
 	mkdir -p $$T/bin/arm64/ && \
-	$(call copy,//runsc:runsc,$$T/bin/arm64) && \
+	cp $(RUNTIME_BIN) $$T/bin/arm64 && \
 	docker run --rm -v $$T/bin/arm64/runsc:/workdir/initramfs/runsc gvisor.dev/images/arm-qemu
 .PHONY: arm-qemu-smoke-test
 
@@ -301,8 +308,13 @@ fsstress-test: load-basic $(RUNTIME_BIN)
 # Specific containerd version tests.
 containerd-test-%: load-basic_alpine load-basic_python load-basic_busybox load-basic_resolv load-basic_httpd load-basic_ubuntu $(RUNTIME_BIN)
 	@$(call install_runtime,$(RUNTIME),) # Clear flags.
-	@$(call sudo,tools/installers:containerd,$*)
-	@$(call sudo,tools/installers:shim)
+	@sudo tools/install_containerd.sh
+ifeq (,$(STAGED_BINARIES))
+	@$(call sudocopy,//shim:containerd-shim-runsc-v1,"$$(dirname $$(which containerd))")
+else
+	gsutil cat "$(STAGED_BINARIES)" | \
+		sudo tar -C "$$(dirname $$(which containerd))" -zxvf - containerd-shim-runsc-v1
+endif
 	@$(call sudo,test/root:root_test,--runtime=$(RUNTIME) -test.v)
 
 # The shim builds with containerd 1.3.9 and it's not backward compatible. Test
@@ -323,7 +335,6 @@ containerd-tests: containerd-test-1.4.3
 ##     BENCHMARKS_SUITE     - name of the benchmark suite. See //tools/bigquery/bigquery.go.
 ##     BENCHMARKS_UPLOAD    - if true, upload benchmark data from the run.
 ##     BENCHMARKS_OFFICIAL  - marks the data as official.
-##     BENCHMARKS_PLATFORMS - platforms to run benchmarks (e.g. ptrace kvm).
 ##     BENCHMARKS_FILTER    - filter to be applied to the test suite.
 ##     BENCHMARKS_OPTIONS   - options to be passed to the test.
 ##     BENCHMARKS_PROFILE   - profile options to be passed to the test.
@@ -335,7 +346,6 @@ BENCHMARKS_TABLE     ?= benchmarks
 BENCHMARKS_SUITE     ?= ffmpeg
 BENCHMARKS_UPLOAD    ?= false
 BENCHMARKS_OFFICIAL  ?= false
-BENCHMARKS_PLATFORMS ?= ptrace
 BENCHMARKS_TARGETS   := //test/benchmarks/media:ffmpeg_test
 BENCHMARKS_FILTER    := .
 BENCHMARKS_OPTIONS   := -test.benchtime=30s
@@ -362,7 +372,7 @@ run_benchmark = \
   rm -rf $$T)
 
 benchmark-platforms: load-benchmarks $(RUNTIME_BIN) ## Runs benchmarks for runc and all given platforms in BENCHMARK_PLATFORMS.
-	@$(foreach PLATFORM,$(BENCHMARKS_PLATFORMS), \
+	@$(foreach PLATFORM,$(shell $(RUNTIME_BIN) help platforms | awk '{print $1;}'), \
 	  $(call run_benchmark,$(PLATFORM),--platform=$(PLATFORM) $(BENCH_RUNTIME_ARGS) --vfs2) && \
     $(call run_benchmark,$(PLATFORM)_vfs1,--platform=$(PLATFORM) $(BENCH_RUNTIME_ARGS)) && \
   ) true
