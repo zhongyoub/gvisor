@@ -14,6 +14,9 @@
 
 #include <sys/mount.h>
 
+#include <iomanip>
+#include <sstream>
+
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "test/util/capability_util.h"
@@ -51,6 +54,7 @@ struct fsverity_digest {
 
 const int fsverity_max_digest_size = 64;
 const int fsverity_default_digest_size = 32;
+constexpr char kContents[] = "foobarbaz";
 
 class IoctlTest : public ::testing::Test {
  protected:
@@ -65,7 +69,6 @@ class IoctlTest : public ::testing::Test {
                 SyscallSucceeds());
 
     // Create a new file in the tmpfs mount.
-    constexpr char kContents[] = "foobarbaz";
     file_ = ASSERT_NO_ERRNO_AND_VALUE(
         TempPath::CreateFileWith(tmpfs_dir_.path(), kContents, 0777));
     filename_ = Basename(file_.path());
@@ -77,7 +80,7 @@ class IoctlTest : public ::testing::Test {
 };
 
 TEST_F(IoctlTest, Enable) {
-  // mount a verity fs on the existing tmpfs mount.
+  // Mount a verity fs on the existing tmpfs mount.
   std::string mount_opts = "lower_path=" + tmpfs_dir_.path();
   auto const verity_dir = ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateDir());
   ASSERT_THAT(
@@ -101,7 +104,7 @@ TEST_F(IoctlTest, Enable) {
 }
 
 TEST_F(IoctlTest, Measure) {
-  // mount a verity fs on the existing tmpfs mount.
+  // Mount a verity fs on the existing tmpfs mount.
   std::string mount_opts = "lower_path=" + tmpfs_dir_.path();
   auto const verity_dir = ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateDir());
   ASSERT_THAT(
@@ -125,6 +128,57 @@ TEST_F(IoctlTest, Measure) {
               SyscallSucceeds());
   EXPECT_EQ(digest->digest_size, fsverity_default_digest_size);
   free(digest);
+}
+
+TEST_F(IoctlTest, Mount) {
+  // Mount a verity fs on the existing tmpfs mount.
+  std::string mount_opts = "lower_path=" + tmpfs_dir_.path();
+  auto verity_dir = ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateDir());
+  ASSERT_THAT(
+      mount("", verity_dir.path().c_str(), "verity", 0, mount_opts.c_str()),
+      SyscallSucceeds());
+
+  // Enable both the file and the directory.
+  auto const fd = ASSERT_NO_ERRNO_AND_VALUE(
+      Open(JoinPath(verity_dir.path(), filename_), O_RDONLY, 0777));
+  ASSERT_THAT(ioctl(fd.get(), FS_IOC_ENABLE_VERITY), SyscallSucceeds());
+  auto const dir_fd =
+      ASSERT_NO_ERRNO_AND_VALUE(Open(verity_dir.path(), O_RDONLY, 0777));
+  ASSERT_THAT(ioctl(dir_fd.get(), FS_IOC_ENABLE_VERITY), SyscallSucceeds());
+
+  // Measure the root hash.
+  int digest_size = sizeof(struct fsverity_digest) + fsverity_max_digest_size;
+  struct fsverity_digest *digest =
+      reinterpret_cast<struct fsverity_digest *>(malloc(digest_size));
+  memset(digest, 0, digest_size);
+  digest->digest_size = fsverity_max_digest_size;
+  ASSERT_THAT(ioctl(dir_fd.get(), FS_IOC_MEASURE_VERITY, digest),
+              SyscallSucceeds());
+
+  // Mount a verity fs with specified root hash.
+  std::stringstream strDigest;
+  strDigest << std::hex;
+  for (int i = 0; i < digest->digest_size; ++i) {
+    strDigest << std::setw(2) << std::setfill('0')
+              << static_cast<int>(digest->digest[i]);
+  }
+  free(digest);
+  mount_opts += ",root_hash=" + strDigest.str();
+  auto verity_with_hash_dir = ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateDir());
+  ASSERT_THAT(mount("", verity_with_hash_dir.path().c_str(), "verity", 0,
+                    mount_opts.c_str()),
+              SyscallSucceeds());
+
+  // Make sure the file can be open and read in the mounted verity fs.
+  auto const verity_fd = ASSERT_NO_ERRNO_AND_VALUE(
+      Open(JoinPath(verity_with_hash_dir.path(), filename_), O_RDONLY, 0777));
+  char buf[16];
+  EXPECT_THAT(ReadFd(fd.get(), buf, sizeof(kContents)), SyscallSucceeds());
+  EXPECT_THAT(buf, ::testing::StrEq(kContents));
+
+  // Verity directories should not be deleted.
+  verity_dir.release();
+  verity_with_hash_dir.release();
 }
 
 }  // namespace
