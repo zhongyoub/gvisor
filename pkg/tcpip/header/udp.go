@@ -116,6 +116,13 @@ func (b UDP) CalculateChecksum(partialChecksum uint16) uint16 {
 	return Checksum(b[:UDPMinimumSize], partialChecksum)
 }
 
+// IsChecksumValid performs checksum validation.
+func (b UDP) IsChecksumValid(src, dst tcpip.Address, payloadChecksum uint16) bool {
+	xsum := PseudoHeaderChecksum(UDPProtocolNumber, dst, src, b.Length())
+	xsum = ChecksumCombine(xsum, payloadChecksum)
+	return b.CalculateChecksum(xsum) == 0xffff
+}
+
 // Encode encodes all the fields of the udp header.
 func (b UDP) Encode(u *UDPFields) {
 	binary.BigEndian.PutUint16(b[udpSrcPort:], u.SrcPort)

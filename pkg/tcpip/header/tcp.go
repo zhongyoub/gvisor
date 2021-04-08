@@ -321,6 +321,13 @@ func (b TCP) CalculateChecksum(partialChecksum uint16) uint16 {
 	return Checksum(b[:b.DataOffset()], partialChecksum)
 }
 
+// IsChecksumValid performs checksum validation.
+func (b TCP) IsChecksumValid(src, dst tcpip.Address, payloadChecksum, payloadLength uint16) bool {
+	xsum := PseudoHeaderChecksum(TCPProtocolNumber, src, dst, uint16(b.DataOffset())+payloadLength)
+	xsum = ChecksumCombine(xsum, payloadChecksum)
+	return b.CalculateChecksum(xsum) == 0xffff
+}
+
 // Options returns a slice that holds the unparsed TCP options in the segment.
 func (b TCP) Options() []byte {
 	return b[TCPMinimumSize:b.DataOffset()]
