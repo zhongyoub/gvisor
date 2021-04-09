@@ -17,6 +17,7 @@
 package ports
 
 import (
+	"math"
 	"math/rand"
 	"sync/atomic"
 
@@ -218,12 +219,13 @@ type PortManager struct {
 
 // NewPortManager creates new PortManager.
 func NewPortManager() *PortManager {
+	const firstEphemeral = 16000
 	return &PortManager{
 		allocatedPorts: make(map[portDescriptor]addrToDevice),
 		// Match Linux's default ephemeral range. See:
 		// https://github.com/torvalds/linux/blob/e54937963fa249595824439dc839c948188dea83/net/ipv4/af_inet.c#L1842
-		firstEphemeral: 32768,
-		numEphemeral:   28232,
+		firstEphemeral: firstEphemeral,
+		numEphemeral:   math.MaxUint16 - firstEphemeral + 1,
 	}
 }
 

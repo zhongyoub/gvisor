@@ -443,6 +443,7 @@ func (e *endpoint) reserveTupleLocked() bool {
 		Dest:         dest,
 	}
 	if !e.stack.ReserveTuple(portRes) {
+		e.stack.Stats().TCP.FailedPortReservations.Increment()
 		return false
 	}
 
