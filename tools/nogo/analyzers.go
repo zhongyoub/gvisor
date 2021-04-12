@@ -47,7 +47,6 @@ import (
 	"honnef.co/go/tools/stylecheck"
 
 	"gvisor.dev/gvisor/tools/checkescape"
-	"gvisor.dev/gvisor/tools/checklocks"
 	"gvisor.dev/gvisor/tools/checkunsafe"
 )
 
@@ -80,7 +79,7 @@ var AllAnalyzers = []*analysis.Analyzer{
 	unusedresult.Analyzer,
 	checkescape.Analyzer,
 	checkunsafe.Analyzer,
-	checklocks.Analyzer,
+	// checklocks.Analyzer,
 }
 
 func register(all []*analysis.Analyzer) {
