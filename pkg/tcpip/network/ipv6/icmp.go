@@ -987,6 +987,12 @@ func (*icmpReasonParameterProblem) isICMPReason() {}
 // listener and no alternative means to inform the sender.
 type icmpReasonPortUnreachable struct{}
 
+// icmpReasonNetworkUnreachable is an error where no route can be found
+// to the network of the final destination.
+type icmpReasonNetworkUnreachable struct{}
+
+func (*icmpReasonNetworkUnreachable) isICMPReason() {}
+
 func (*icmpReasonPortUnreachable) isICMPReason() {}
 
 // icmpReasonHopLimitExceeded is an error where a packet's hop limit exceeded in
@@ -1146,6 +1152,10 @@ func (p *protocol) returnError(reason icmpReason, pkt *stack.PacketBuffer) tcpip
 	case *icmpReasonPortUnreachable:
 		icmpHdr.SetType(header.ICMPv6DstUnreachable)
 		icmpHdr.SetCode(header.ICMPv6PortUnreachable)
+		counter = sent.dstUnreachable
+	case *icmpReasonNetworkUnreachable:
+		icmpHdr.SetType(header.ICMPv6DstUnreachable)
+		icmpHdr.SetCode(header.ICMPv6NetworkUnreachable)
 		counter = sent.dstUnreachable
 	case *icmpReasonHopLimitExceeded:
 		icmpHdr.SetType(header.ICMPv6TimeExceeded)

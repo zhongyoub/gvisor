@@ -960,7 +960,7 @@ func (e *endpoint) forwardPacket(pkt *stack.PacketBuffer) tcpip.Error {
 
 	r, err := e.protocol.stack.FindRoute(0, "", dstAddr, ProtocolNumber, false /* multicastLoop */)
 	if err != nil {
-		return err
+		return e.protocol.returnError(&icmpReasonNetworkUnreachable{}, pkt)
 	}
 	defer r.Release()
 
